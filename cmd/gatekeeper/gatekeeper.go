@@ -1,13 +1,14 @@
 package main
 
 import (
+	"flag"
+	"log"
+	"math/rand"
 	"os"
 	"os/signal"
 	"syscall"
-	"log"
 	"time"
-	"math/rand"
-	"flag"
+
 	"github.com/tsoding/gatekeeper/internal"
 )
 
@@ -28,26 +29,29 @@ func main() {
 
 	if isCli {
 		startCLI(db)
+
+		PollOverdueReminders(db, &MockDiscordSession{})
 	} else {
 		// Discord //////////////////////////////
 		dg, err := startDiscord(db)
 		if err != nil {
-			log.Println("Could not open Discord connection:", err);
+			log.Println("Could not open Discord connection:", err)
 		} else {
-			defer dg.Close();
+			defer dg.Close()
 		}
 
+		PollOverdueReminders(db, dg)
 
 		// MPV //////////////////////////////
-		mpvMsgs, ok := startMpvControl();
+		mpvMsgs, ok := startMpvControl()
 		if !ok {
-			log.Println("Could not start the MPV Control");
+			log.Println("Could not start the MPV Control")
 		}
 
 		// Twitch //////////////////////////////
-		tw, ok := startTwitch(db, mpvMsgs);
+		tw, ok := startTwitch(db, mpvMsgs)
 		if !ok {
-			log.Println("Could not open Twitch connection");
+			log.Println("Could not open Twitch connection")
 		} else {
 			defer tw.Close()
 		}

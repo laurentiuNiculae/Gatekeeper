@@ -85,7 +85,7 @@ func (l *LocalEnvironment) AsDiscord() *DiscordEnvironment {
 }
 
 func (l *LocalEnvironment) SendMessage(message string) {
-	fmt.Println("Bot said:\n" + message)
+	fmt.Println(message)
 }
 
 func logLocalMessage(db *sql.DB, m Message) {
