@@ -7,11 +7,16 @@ import (
 	"log"
 	"time"
 	"math/rand"
+	"flag"
 	"github.com/tsoding/gatekeeper/internal"
 )
 
 func main() {
 	rand.Seed(time.Now().UnixNano())
+
+	var isCli bool
+	flag.BoolVar(&isCli, "cli", false, "Start gatekeeper in cli mode.")
+	flag.Parse()
 
 	// PostgreSQL //////////////////////////////
 	db := internal.StartPostgreSQL()
@@ -21,26 +26,31 @@ func main() {
 		defer db.Close()
 	}
 
-	// Discord //////////////////////////////
-	dg, err := startDiscord(db)
-	if err != nil {
-		log.Println("Could not open Discord connection:", err);
+	if isCli {
+		startCLI(db)
 	} else {
-		defer dg.Close();
-	}
+		// Discord //////////////////////////////
+		dg, err := startDiscord(db)
+		if err != nil {
+			log.Println("Could not open Discord connection:", err);
+		} else {
+			defer dg.Close();
+		}
 
-	// MPV //////////////////////////////
-	mpvMsgs, ok := startMpvControl();
-	if !ok {
-		log.Println("Could not start the MPV Control");
-	}
 
-	// Twitch //////////////////////////////
-	tw, ok := startTwitch(db, mpvMsgs);
-	if !ok {
-		log.Println("Could not open Twitch connection");
-	} else {
-		defer tw.Close()
+		// MPV //////////////////////////////
+		mpvMsgs, ok := startMpvControl();
+		if !ok {
+			log.Println("Could not start the MPV Control");
+		}
+
+		// Twitch //////////////////////////////
+		tw, ok := startTwitch(db, mpvMsgs);
+		if !ok {
+			log.Println("Could not open Twitch connection");
+		} else {
+			defer tw.Close()
+		}
 	}
 
 	// Wait here until CTRL-C or other term signal is received.
