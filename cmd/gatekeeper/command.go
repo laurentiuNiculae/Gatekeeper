@@ -24,7 +24,7 @@ var (
 	CommandDef = "([a-zA-Z0-9\\-_]+)( +(.*))?"
 	CommandRegexp = regexp.MustCompile("^ *("+CommandPrefix+") *"+CommandDef+"$")
 	CommandNoPrefixRegexp = regexp.MustCompile("^ *"+CommandDef+"$")
-	ReminderDurationDef = `(\d+)(s|m|h|d|y)`
+	ReminderDurationDef = `(\d+)(s|m|h|d|M|y)`
 	ReminderArgsDef = `^((`+ReminderDurationDef+`)+) +(.+)$`
 	ReminderDurationRegexp = regexp.MustCompile(ReminderDurationDef)
 	ReminderArgsRegexp = regexp.MustCompile(ReminderArgsDef)
@@ -787,7 +787,14 @@ func EvalBuiltinCommand(db *sql.DB, command Command, env CommandEnvironment, con
 		durationStr := args[1]
 		message := args[5]
 
-		delay, err := ParseDurationStr(durationStr)
+		delay, err := ParseReminderDelayStr(durationStr)
+		if err != nil {
+			env.SendMessage(env.AtAuthor() + " Delay ammount overflows when parsing the duration string." + "\n")
+			return
+		}
+
+		now := time.Now()
+		remindAt, err := AddDelayToTimestamp(now, delay)
 		if err != nil {
 			env.SendMessage(env.AtAuthor() + " Delay ammount overflows." + "\n")
 			return
@@ -796,14 +803,14 @@ func EvalBuiltinCommand(db *sql.DB, command Command, env CommandEnvironment, con
 		err = SetReminder(db, Reminder{
 			UserId:   env.AuthorUserId(),
 			Message:  message,
-			RemindAt: time.Now().Add(delay),
+			RemindAt: remindAt,
 		})
 		if err != nil {
 			env.SendMessage(env.AtAuthor() + " " + err.Error())
 			return
 		}
 
-		env.SendMessage(env.AtAuthor() + " Reminder has been successfully set to fire in " + DurationToString(delay) + ".")
+		env.SendMessage(env.AtAuthor() + " Reminder has been successfully set to fire in " + DurationToString(now, remindAt) + ".")
 	case "reminders":
 		discordEnv := env.AsDiscord()
 		if discordEnv == nil {
@@ -825,7 +832,7 @@ func EvalBuiltinCommand(db *sql.DB, command Command, env CommandEnvironment, con
 
 		sb := strings.Builder{}
 		for i, r := range reminders {
-			remaining := DurationToString(r.RemindAt.Sub(time.Now()))
+			remaining := DurationToString(time.Now(), r.RemindAt)
 			sb.WriteString(fmt.Sprintf("%d. In %s: %s\n", i, remaining, r.Message))
 		}
 

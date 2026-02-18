@@ -10,11 +10,45 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"errors"
 )
 
 const BotShrineChannelId = "555128235869077506"
 const ReminderSize = 256
 const MaxRemindersCount = 5
+const MinimumReminderDelay = 1 * time.Minute
+const ReminderPoolInterval = MinimumReminderDelay
+
+type ReminderDelay struct {
+	Seconds int
+	Minutes int
+	Hours   int
+	Days    int
+	Months  int
+	Years   int
+}
+
+func AddDelayToTimestamp(t1 time.Time, delay ReminderDelay) (time.Time, error) {
+	t2 := t1.Add(time.Duration(delay.Seconds) * time.Second)
+	t2 = t2.Add(time.Duration(delay.Minutes) * time.Minute)
+	t2 = t2.Add(time.Duration(delay.Hours) * time.Hour)
+	t2 = t2.AddDate(delay.Years, delay.Months, delay.Days)
+
+	if t2.Before(t1) {
+		return time.Time{}, errors.New("Time overflow")
+	}
+
+	return t2, nil
+}
+
+const (
+	SecondsCode string = "s"
+	MinutesCode = "m"
+	HoursCode = "h"
+	DaysCode = "d"
+	MonthsCode = "M"
+	YearsCode = "y"
+)
 
 type Reminder struct {
 	Id       int64
@@ -47,77 +81,99 @@ func PollOverdueReminders(db *sql.DB, dg DiscordSession) {
 			}
 
 			_, err = db.Exec("DELETE FROM Reminders WHERE id = ANY($1);", pq.Array(successfullyFiredReminders));
-			if (err != nil) {
+			if err != nil {
 				log.Println("Error:", err)
 			}
 
-			time.Sleep(1 * time.Minute)
+			time.Sleep(ReminderPoolInterval)
 		}
 	}()
 }
 
-var Units = []string{"y", "d", "h", "m", "s"}
+var Units = []string{"y", "M", "d", "h", "m", "s"}
 
-var UnitDurations = map[string]time.Duration{
-	"s": time.Second,
-	"m": time.Minute,
-	"h": time.Hour,
-	"d": 24 * time.Hour,
-	"y": time.Duration(float64(365) * float64(24 * time.Hour)),
-}
-
-func DurationToString(d time.Duration) string {
-	if d == 0 {
+func DurationToString(from, to time.Time) string {
+	if from.Equal(to) {
 		return "0s"
 	}
 
-	neg := d < 0
-	if neg {
-		d = -d
+	var parts []string
+	cur := from
+
+	year := 0
+	for next := cur.AddDate(1, 0, 0); !next.After(to); next = cur.AddDate(1, 0, 0) {
+		cur = next
+		year++
+	}
+	if year > 0 {
+		parts = append(parts, fmt.Sprintf("%dy", year))
 	}
 
-	var parts []string
-	rem := d
+	month := 0
+	for next := cur.AddDate(0, 1, 0); !next.After(to); next = cur.AddDate(0, 1, 0) {
+		cur = next
+		month++
+	}
+	if month > 0 {
+		parts = append(parts, fmt.Sprintf("%dM", month))
+	}
 
-	for _, unit := range Units {
-		unitDur := UnitDurations[unit]
-		if rem >= unitDur {
-			n := rem / unitDur
-			rem = rem % unitDur
-			parts = append(parts, fmt.Sprintf("%d%s", n, unit))
-		}
+	rem := to.Sub(cur)
+
+	day := rem / (24 * time.Hour)
+	if day > 0 {
+		parts = append(parts, fmt.Sprintf("%dd", day))
+		rem -= day * 24 * time.Hour
+	}
+
+	hour := rem / time.Hour
+	if hour > 0 {
+		parts = append(parts, fmt.Sprintf("%dh", hour))
+		rem -= hour * time.Hour
+	}
+
+	min := rem / time.Minute
+	if min > 0 {
+		parts = append(parts, fmt.Sprintf("%dm", min))
+		rem -= min * time.Minute
+	}
+
+	sec := rem / time.Second
+	if sec > 0 {
+		parts = append(parts, fmt.Sprintf("%ds", sec))
 	}
 
 	if len(parts) == 0 {
-		parts = append(parts, "0s")
+		return "0s"
 	}
 
-	res := strings.Join(parts, "")
-	if neg {
-		res = "-" + res
-	}
-	return res
+	return strings.Join(parts, "")
 }
 
-func ParseDurationStr(durationStr string) (time.Duration, error) {
-	delay := time.Duration(0)
+func ParseReminderDelayStr(durationStr string) (ReminderDelay, error) {
+	delay := ReminderDelay{}
 
 	for _, match := range ReminderDurationRegexp.FindAllStringSubmatch(durationStr, -1) {
-		ammount, err := strconv.ParseInt(match[1], 10, 64)
+		ammount, err := strconv.ParseInt(match[1], 10, 32)
 		if err != nil {
-			log.Println("Reminder duration parsing: ", err)
-			return 0, fmt.Errorf("Delay ammount overflows.")
+			log.Println("Error parsing reminder duration: ", err)
+			return ReminderDelay{}, fmt.Errorf("Delay ammount overflows.")
 		}
 		unit := match[2]
 
-		d, ok := MulDurationSafe(ammount, UnitDurations[unit])
-		if !ok {
-			return 0, fmt.Errorf("Delay ammount overflows.")
-		}
-
-		delay, ok = AddDurationSafe(delay, d)
-		if !ok {
-			return 0, fmt.Errorf("Duration specified caused an overflow.")
+		switch unit {
+		case SecondsCode:
+			delay.Seconds = int(ammount)
+		case MinutesCode:
+			delay.Minutes = int(ammount)
+		case HoursCode:
+			delay.Hours = int(ammount)
+		case DaysCode:
+			delay.Days = int(ammount)
+		case MonthsCode:
+			delay.Months = int(ammount)
+		case YearsCode:
+			delay.Years = int(ammount)
 		}
 	}
 
@@ -223,37 +279,32 @@ func InsertReminder(db *sql.DB, reminder Reminder) error {
 func ValidateReminder(r Reminder) error {
 	delay := r.RemindAt.Sub(time.Now())
 
-	if (delay < 1*time.Minute) {
+	max := time.Now().AddDate(290000, 12, 0)
+	if r.RemindAt.After(max) {
+		return errors.New("Timestamp out of range, max is ~290000 years")
+	}
+
+	if delay < MinimumReminderDelay {
 		return fmt.Errorf("Delay specified is too small")
 	}
 
-	if (len([]rune(r.Message)) > ReminderSize) {
+	if len([]rune(r.Message)) > ReminderSize {
 		return fmt.Errorf("Reminder message must be max %v characters long", ReminderSize)
 	}
 
 	return nil
 }
 
-func AddDurationSafe(a, b time.Duration) (time.Duration, bool) {
-    if b > 0 && a > time.Duration(math.MaxInt64)-b {
-        return 0, false
-    }
-    if b < 0 && a < time.Duration(math.MinInt64)-b {
-        return 0, false
-    }
-    return a + b, true
-}
-
-func MulDurationSafe(ammount int64, d time.Duration) (time.Duration, bool) {
+func MulDurationSafe(ammount int, d time.Duration) (time.Duration, bool) {
     if d == 0 || ammount == 0 {
         return 0, true
     }
     if ammount > 0 {
-        if d > time.Duration(math.MaxInt64)/time.Duration(ammount) {
+        if d > time.Duration(math.MaxInt)/time.Duration(ammount) {
             return 0, false
         }
     } else {
-        if d < time.Duration(math.MinInt64)/time.Duration(ammount) {
+        if d < time.Duration(math.MinInt)/time.Duration(ammount) {
             return 0, false
         }
     }
